@@ -1,0 +1,12 @@
+name: TOROpassICsystem
+version: 1.0
+main: prj.salmon.toropassicsystem.TOROpassICsystem
+api-version: 1.20
+commands:
+  charge:
+    description: "ICカードに金額をチャージします"
+    usage: "/charge <金額>"
+permissions:
+  toropassicsystem.charge:
+    description: "チャージコマンドの使用を許可します"
+    default: true
