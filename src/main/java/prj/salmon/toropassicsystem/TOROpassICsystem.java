@@ -22,20 +22,66 @@ import org.bukkit.event.vehicle.VehicleExitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
+import prj.salmon.toropassicsystem.types.PaymentHistory;
+import prj.salmon.toropassicsystem.types.SavingData;
+import prj.salmon.toropassicsystem.types.SavingDataJson;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExecutor {
-
+    // 乗車中データ・残高
     private final HashMap<UUID, StationData> playerData = new HashMap<>();
+    // データの保存
+    private final JSONControler jsonControler = new JSONControler("toropass.json", getDataFolder());
+
     private final NamespacedKey customModelDataKey = new NamespacedKey(this, "custom_model_data");
 
     @Override
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
         this.getCommand("charge").setExecutor(this);
+
+        try {
+            jsonControler.initialiseIfNotExists();
+
+            SavingDataJson lastdata = jsonControler.load();
+
+            for (SavingData data : lastdata.data) {
+                StationData sdata = new StationData();
+                sdata.balance = data.balance;
+                sdata.paymentHistory.addAll(data.paymentHistory);
+                playerData.put(data.player, sdata);
+            }
+        } catch (IOException e) {
+            getLogger().warning(e.getMessage());
+        }
+    }
+
+    private void save() {
+        SavingDataJson data = new SavingDataJson();
+
+        data.data = new ArrayList<>();
+
+        for (Map.Entry<UUID, StationData> entry : playerData.entrySet()) {
+            SavingData sdata = new SavingData();
+            sdata.player = entry.getKey();
+            sdata.balance = entry.getValue().balance;
+            sdata.paymentHistory = new ArrayList<>();
+            sdata.paymentHistory.addAll(entry.getValue().paymentHistory);
+            data.data.add(sdata);
+        }
+
+        data.lastupdate = System.currentTimeMillis() / 1000L;
+
+        try {
+            jsonControler.save(data);
+        } catch (IOException e) {
+            getLogger().warning(e.getMessage());
+        }
     }
 
     @Override
@@ -67,6 +113,8 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 }
 
                 data.balance += amount;
+                data.paymentHistory.add(PaymentHistory.build("Special::charge", "", amount, data.balance, System.currentTimeMillis() / 1000L));
+                save();
                 player.sendMessage(ChatColor.GREEN + String.valueOf(amount) + "トロポをチャージしました。現在の残高: " + data.balance + "トロポ");
             } catch (NumberFormatException e) {
                 player.sendMessage(ChatColor.RED + "有効な数値を入力してください。");
@@ -118,6 +166,8 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                         player.sendMessage(ChatColor.RED + "残高不足です。チャージしてください。");
                     } else {
                         data.balance -= fare;
+                        data.paymentHistory.add(PaymentHistory.build(data.stationName, line2, fare * -1, data.balance, System.currentTimeMillis() / 1000L));
+                        save();
                         player.sendMessage(ChatColor.GREEN + "出場: " + line2 + " 引去: " + fare + "トロポ");
                         player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
                         player.playSound(player.getLocation(), "custom.kaisatsu", 1.0F, 1.0F);
@@ -135,9 +185,15 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                         return;
                     }
                     StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                    if (data.balance + chargeAmount > 20000) {
+                        player.sendMessage(ChatColor.RED + "最大チャージ額は20000トロポまでです");
+                        return;
+                    }
                     data.balance += chargeAmount;
                     player.sendMessage(ChatColor.GREEN + "チャージ額: " + chargeAmount + "トロポ");
                     player.sendMessage(ChatColor.GREEN + "現在の残高: " + data.balance + "トロポ");
+                    data.paymentHistory.add(PaymentHistory.build("Special::charge", "", chargeAmount, data.balance, System.currentTimeMillis() / 1000L));
+                    save();
                 } catch (NumberFormatException e) {
                     player.sendMessage(ChatColor.RED + "チャージ額が不正です");
                 }
@@ -227,6 +283,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         public String stationName = "";
         private Location rideStartLocation;
         private double travelDistance = 0;
+        public ArrayList<PaymentHistory> paymentHistory = new ArrayList<>();
 
         public void enterStation(String stationName) {
             this.isInStation = true;
