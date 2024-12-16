@@ -1,5 +1,8 @@
 package prj.salmon.toropassicsystem;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import fi.iki.elonen.NanoHTTPD;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -27,16 +30,15 @@ import prj.salmon.toropassicsystem.types.SavingData;
 import prj.salmon.toropassicsystem.types.SavingDataJson;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExecutor {
     // 乗車中データ・残高
-    private final HashMap<UUID, StationData> playerData = new HashMap<>();
+    public final HashMap<UUID, StationData> playerData = new HashMap<>();
     // データの保存
     private final JSONControler jsonControler = new JSONControler("toropass.json", getDataFolder());
+
+    private HTTPServer httpserver;
 
     private final NamespacedKey customModelDataKey = new NamespacedKey(this, "custom_model_data");
 
@@ -46,6 +48,8 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         this.getCommand("charge").setExecutor(this);
 
         try {
+            httpserver = new HTTPServer(5744, this);
+
             jsonControler.initialiseIfNotExists();
 
             SavingDataJson lastdata = jsonControler.load();
@@ -59,6 +63,12 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         } catch (IOException e) {
             getLogger().warning(e.getMessage());
         }
+    }
+
+    @Override
+    public void onDisable() {
+        save();
+        httpserver.stop();
     }
 
     private void save() {
@@ -123,7 +133,6 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         }
         return false;
     }
-
 
     @EventHandler
     public void onPlayerInteract(PlayerInteractEvent event) {
@@ -277,7 +286,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         return meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3;
     }
 
-    public static class StationData {
+    public class StationData {
         public boolean isInStation = false;
         public int balance = 0; // 残高はint型
         public String stationName = "";
@@ -310,6 +319,46 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
 
         public int calculateFare() {
             return (int) (travelDistance * 1); // 仮の運賃計算式 (int型)
+        }
+    }
+
+    public static class HTTPServer extends NanoHTTPD {
+        private final TOROpassICsystem mainclass;
+
+        public HTTPServer(int port, TOROpassICsystem mainclass) throws IOException {
+            super(port);
+            start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+            this.mainclass = mainclass;
+        }
+
+        @Override
+        public Response serve(IHTTPSession session) {
+            String uri = session.getUri();
+            ObjectMapper mapper = new ObjectMapper();
+            if (uri.equals("/")) {
+                return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"status\": \"OK\"}");
+            } else if (uri.startsWith("/api/balance/")) {
+                Player player = mainclass.getServer().getPlayer(session.getUri().substring("/api/balance/".length()));
+                if (Objects.isNull(player)) {
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found (Player Not Found)");
+                }
+                StationData data = mainclass.playerData.get(player.getUniqueId());
+                return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"balance\": " + data.balance + "}");
+            } else if (uri.startsWith("/api/history/")) {
+                Player player = mainclass.getServer().getPlayer(session.getUri().substring("/api/history/".length()));
+                if (Objects.isNull(player)) {
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found (Player Not Found)");
+                }
+                StationData data = mainclass.playerData.get(player.getUniqueId());
+                try {
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", mapper.writeValueAsString(data.paymentHistory));
+                } catch (JsonProcessingException e) {
+                    mainclass.getLogger().warning(e.getMessage());
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found (JSON Error)");
+                }
+            } else {
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found (URI Error)");
+            }
         }
     }
 }
