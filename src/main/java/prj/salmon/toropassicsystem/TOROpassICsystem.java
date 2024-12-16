@@ -185,6 +185,10 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                         return;
                     }
                     StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                    if (data.balance + chargeAmount > 20000) {
+                        player.sendMessage(ChatColor.RED + "最大チャージ額は20000トロポまでです");
+                        return;
+                    }
                     data.balance += chargeAmount;
                     player.sendMessage(ChatColor.GREEN + "チャージ額: " + chargeAmount + "トロポ");
                     player.sendMessage(ChatColor.GREEN + "現在の残高: " + data.balance + "トロポ");
