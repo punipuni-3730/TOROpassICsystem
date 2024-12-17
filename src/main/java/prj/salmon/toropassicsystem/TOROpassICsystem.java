@@ -3,15 +3,11 @@ package prj.salmon.toropassicsystem;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import fi.iki.elonen.NanoHTTPD;
-import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
-import org.bukkit.Material;
-import org.bukkit.Location;
-import org.bukkit.NamespacedKey;
+import org.bukkit.*;
 import org.bukkit.block.Sign;
 import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
 import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Vehicle;
 import org.bukkit.event.EventHandler;
@@ -21,7 +17,6 @@ import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.vehicle.VehicleEnterEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
-import org.bukkit.event.vehicle.VehicleExitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -46,6 +41,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
         this.getCommand("charge").setExecutor(this);
+        this.getCommand("autocharge").setExecutor(this);
 
         try {
             httpserver = new HTTPServer(5744, this);
@@ -58,6 +54,8 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 StationData sdata = new StationData();
                 sdata.balance = data.balance;
                 sdata.paymentHistory.addAll(data.paymentHistory);
+                sdata.autoChargeThreshold = data.autoChargeThreshold;
+                sdata.autoChargeAmount = data.autoChargeAmount;
                 playerData.put(data.player, sdata);
             }
         } catch (IOException e) {
@@ -82,6 +80,8 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             sdata.balance = entry.getValue().balance;
             sdata.paymentHistory = new ArrayList<>();
             sdata.paymentHistory.addAll(entry.getValue().paymentHistory);
+            sdata.autoChargeThreshold = entry.getValue().autoChargeThreshold;
+            sdata.autoChargeAmount = entry.getValue().autoChargeAmount;
             data.data.add(sdata);
         }
 
@@ -131,6 +131,61 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             }
             return true;
         }
+        if (command.getName().equalsIgnoreCase("autocharge")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("このコマンドはプレイヤーのみ使用できます。");
+                return true;
+            }
+
+            Player player = (Player) sender;
+            if (args.length == 2) {
+                try {
+                    int threshold = Integer.parseInt(args[0]);
+                    int amount = Integer.parseInt(args[1]);
+
+                    // thresholdとamountが負の数でないか確認
+                    if (threshold < 0 || amount < 0) {
+                        player.sendMessage(ChatColor.RED + "不正な値です");
+                        return true;
+                    }
+
+                    // オートチャージ額が1万ポイントを超えないように制限
+                    if (amount > 10000) {
+                        player.sendMessage(ChatColor.RED + "1万トロポを超えるオートチャージはできません");
+                        return true;
+                    }
+
+                    // 残高が1万ポイントを下回った場合の設定も制限
+                    if (threshold > 10000) {
+                        player.sendMessage(ChatColor.RED + "1万トロポを超えるときはオートチャージ設定はできません");
+                        return true;
+                    }
+
+                    StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                    data.autoChargeThreshold = threshold;
+                    data.autoChargeAmount = amount;
+                    player.sendMessage(ChatColor.GREEN + "残高が " + threshold + "トロポを下回った場合に " + amount + "トロポをチャージします。");
+
+                    save();
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "無効な数値が入力されました。");
+                }
+                return true;
+            }
+
+            if (args.length == 1 && args[0].equalsIgnoreCase("stop")) {
+                StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                data.autoChargeThreshold = null;
+                data.autoChargeAmount = null;
+                player.sendMessage(ChatColor.GREEN + "オートチャージが停止されました。");
+
+                save();
+                return true;
+            }
+
+            player.sendMessage(ChatColor.RED + "使用方法: /autocharge <いくらを下回ったとき> <チャージする額> または /autocharge stopで停止");
+            return true;
+        }
         return false;
     }
 
@@ -171,8 +226,12 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                         return;
                     }
                     int fare = data.calculateFare();
+                    if (data.checkAutoCharge()) {
+                        player.sendMessage(ChatColor.GREEN + "オートチャージが実行されました。新しい残高: " + data.balance + "トロポ");
+                    }
                     if (data.balance < fare) {
-                        player.sendMessage(ChatColor.RED + "残高不足です。チャージしてください。");
+                        int shortSF = fare - data.balance;
+                        player.sendMessage(ChatColor.RED + String.valueOf(shortSF) + "トロポ不足しています。チャージしてください。");
                     } else {
                         data.balance -= fare;
                         data.paymentHistory.add(PaymentHistory.build(data.stationName, line2, fare * -1, data.balance, System.currentTimeMillis() / 1000L));
@@ -228,6 +287,24 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 }
                 return;
             }
+            if ("[残額調整]".equals(line1)) {
+                try {
+                    int newBalance = Integer.parseInt(line2);
+                    StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+
+                    if (newBalance < 0) {
+                        player.sendMessage(ChatColor.RED + "値が不正です。");
+                        return;
+                    }
+                    data.balance = newBalance; // 残高を設定
+                    player.sendMessage(ChatColor.GREEN + "新しい残高: " + data.balance + "トロポ");
+                    data.paymentHistory.add(PaymentHistory.build("Special::balanceAdjustment", "", newBalance, data.balance, System.currentTimeMillis() / 1000L));
+                    save();
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "無効な残高値です");
+                }
+                return;
+            }
             return;
         }
     }
@@ -236,7 +313,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
     @EventHandler
     public void onSignChange(SignChangeEvent event) {
         String line1 = ChatColor.stripColor(event.getLine(0));
-        if ("[入場]".equals(line1) || "[出場]".equals(line1) || "[チャージ]".equals(line1) ){
+        if ("[入場]".equals(line1) || "[出場]".equals(line1) || "[チャージ]".equals(line1)) {
             String line2 = ChatColor.stripColor(event.getLine(1));
             if (line2 == null || line2.isEmpty()) {
                 event.getPlayer().sendMessage(ChatColor.RED + "必要な情報を2行目に記載してください。");
@@ -273,17 +350,11 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             }
         }
     }
-
-    @EventHandler
-    public void onVehicleExit(VehicleExitEvent event) {
-        // トロッコから下車時の出場処理を削除
-    }
-
     private boolean isValidICCard(ItemStack item) {
         if (item == null || item.getType() != Material.PAPER) return false;
         ItemMeta meta = item.getItemMeta();
         if (meta == null || !meta.hasCustomModelData()) return false;
-        return meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3;
+        return meta.getCustomModelData() == 1 || meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3|| meta.getCustomModelData() == 4|| meta.getCustomModelData() == 5|| meta.getCustomModelData() == 6;
     }
 
     public class StationData {
@@ -293,6 +364,9 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         private Location rideStartLocation;
         private double travelDistance = 0;
         public ArrayList<PaymentHistory> paymentHistory = new ArrayList<>();
+
+        public Integer autoChargeThreshold = null; // 残高がこれを下回った場合にオートチャージ
+        public Integer autoChargeAmount = null;    // オートチャージの金額
 
         public void enterStation(String stationName) {
             this.isInStation = true;
@@ -318,7 +392,16 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         }
 
         public int calculateFare() {
-            return (int) (travelDistance * 1); // 仮の運賃計算式 (int型)
+            return (int) (travelDistance * .2); // 仮の運賃計算式 (int型)
+        }
+
+        public boolean checkAutoCharge() {
+            if (autoChargeThreshold != null && autoChargeAmount != null && balance < autoChargeThreshold) {
+                int chargeAmount = autoChargeAmount;
+                balance += chargeAmount;
+                paymentHistory.add(PaymentHistory.build("Special::autocharge", "", chargeAmount, balance, System.currentTimeMillis() / 1000L));
+            }
+            return true;
         }
     }
 
@@ -361,4 +444,5 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             }
         }
     }
+
 }
