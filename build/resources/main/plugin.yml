@@ -13,3 +13,6 @@ permissions:
   toropassicsystem.charge:
     description: "チャージコマンドの使用を許可します"
     default: true
+  toropassicsystem.autocharge:
+    description: "チャージコマンドの使用を許可します"
+    default: true
