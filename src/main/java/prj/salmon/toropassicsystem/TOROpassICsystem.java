@@ -283,7 +283,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                     player.sendMessage(ChatColor.GREEN + "強制出場しました。");
                     data.exitStation();
                 } else {
-                    player.sendMessage(ChatColor.RED + "入場記録がありません。まず入場してください。");
+                    player.sendMessage(ChatColor.RED + "入場記録がありません。");
                 }
                 return;
             }
