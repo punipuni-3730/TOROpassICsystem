@@ -1,5 +1,5 @@
 name: TOROpassICsystem
-version: 1.1
+version: 1.2
 main: prj.salmon.toropassicsystem.TOROpassICsystem
 api-version: 1.20
 commands:

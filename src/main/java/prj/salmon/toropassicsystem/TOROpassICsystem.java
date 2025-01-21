@@ -283,7 +283,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                     player.sendMessage(ChatColor.GREEN + "強制出場しました。");
                     data.exitStation();
                 } else {
-                    player.sendMessage(ChatColor.RED + "入場記録がありません。まず入場してください。");
+                    player.sendMessage(ChatColor.RED + "入場記録がありません。");
                 }
                 return;
             }
@@ -354,7 +354,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         if (item == null || item.getType() != Material.PAPER) return false;
         ItemMeta meta = item.getItemMeta();
         if (meta == null || !meta.hasCustomModelData()) return false;
-        return meta.getCustomModelData() == 1 || meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3|| meta.getCustomModelData() == 4|| meta.getCustomModelData() == 5|| meta.getCustomModelData() == 6;
+        return meta.getCustomModelData() == 1 || meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3|| meta.getCustomModelData() == 4|| meta.getCustomModelData() == 5|| meta.getCustomModelData() == 6|| meta.getCustomModelData() == 7|| meta.getCustomModelData() == 8|| meta.getCustomModelData() == 9;
     }
 
     public class StationData {
@@ -400,8 +400,9 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 int chargeAmount = autoChargeAmount;
                 balance += chargeAmount;
                 paymentHistory.add(PaymentHistory.build("Special::autocharge", "", chargeAmount, balance, System.currentTimeMillis() / 1000L));
+                return true;
             }
-            return true;
+            return false;
         }
     }
 
