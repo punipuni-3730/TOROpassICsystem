@@ -69,7 +69,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         httpserver.stop();
     }
 
-    private void save() {
+    void save() {
         SavingDataJson data = new SavingDataJson();
 
         data.data = new ArrayList<>();
