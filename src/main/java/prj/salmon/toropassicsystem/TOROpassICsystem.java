@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import fi.iki.elonen.NanoHTTPD;
 import org.bukkit.*;
 import org.bukkit.block.Sign;
+import org.bukkit.block.sign.SignSide;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -19,12 +20,15 @@ import org.bukkit.event.vehicle.VehicleEnterEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import prj.salmon.toropassicsystem.types.PaymentHistory;
 import prj.salmon.toropassicsystem.types.SavingData;
 import prj.salmon.toropassicsystem.types.SavingDataJson;
 
 import java.io.IOException;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExecutor {
@@ -36,12 +40,20 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
     private HTTPServer httpserver;
 
     private final NamespacedKey customModelDataKey = new NamespacedKey(this, "custom_model_data");
+    private final NamespacedKey ticketTypeKey = new NamespacedKey(this, "ticket_type");
+    private final NamespacedKey companyCodeKey = new NamespacedKey(this, "company_code");
+    private final NamespacedKey purchaseAmountKey = new NamespacedKey(this, "purchase_amount");
+    private final NamespacedKey expiryDateKey = new NamespacedKey(this, "expiry_date");
+    private final NamespacedKey checkDigitKey = new NamespacedKey(this, "check_digit");
+    private final NamespacedKey routeStartKey = new NamespacedKey(this, "route_start");
+    private final NamespacedKey routeEndKey = new NamespacedKey(this, "route_end");
 
     @Override
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
         this.getCommand("charge").setExecutor(this);
         this.getCommand("autocharge").setExecutor(this);
+        this.getCommand("writecard").setExecutor(this);
 
         try {
             httpserver = new HTTPServer(5744, this);
@@ -116,7 +128,6 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 }
                 StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
 
-                // 残高が20000を超えないようにする
                 if (data.balance + amount > 20000) {
                     player.sendMessage(ChatColor.RED + "最大チャージ額は20000トロポまでです");
                     return true;
@@ -143,19 +154,16 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                     int threshold = Integer.parseInt(args[0]);
                     int amount = Integer.parseInt(args[1]);
 
-                    // thresholdとamountが負の数でないか確認
                     if (threshold < 0 || amount < 0) {
                         player.sendMessage(ChatColor.RED + "不正な値です");
                         return true;
                     }
 
-                    // オートチャージ額が1万ポイントを超えないように制限
                     if (amount > 10000) {
                         player.sendMessage(ChatColor.RED + "1万トロポを超えるオートチャージはできません");
                         return true;
                     }
 
-                    // 残高が1万ポイントを下回った場合の設定も制限
                     if (threshold > 10000) {
                         player.sendMessage(ChatColor.RED + "1万トロポを超えるときはオートチャージ設定はできません");
                         return true;
@@ -183,7 +191,105 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 return true;
             }
 
-            player.sendMessage(ChatColor.RED + "使用方法: /autocharge <いくらを下回ったとき> <チャージする額> または /autocharge stopで停止");
+            player.sendMessage(ChatColor.RED + "使用方法:<チャージする額> または /autocharge stopで停止");
+            return true;
+        }
+        if (command.getName().equalsIgnoreCase("writecard")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("このコマンドはプレイヤーのみ使用できます。");
+                return true;
+            }
+
+            Player player = (Player) sender;
+            if (args.length < 1 || args[0].trim().isEmpty()) {
+                player.sendMessage(ChatColor.RED + "使用方法: /writecard <券種>-<事業者コード>-<購入金額>-<有効期限>-<チェックデジット>");
+                return true;
+            }
+
+            String[] cardData = args[0].split("-");
+            if (cardData.length < 5) {
+                player.sendMessage(ChatColor.RED + "入力内容が正しくありません。コードを再度発行し直してください。" + cardData.length);
+                return true;
+            }
+
+            try {
+                int ticketType = Integer.parseInt(cardData[0]);
+                int companyCode = Integer.parseInt(cardData[1]);
+                int purchaseAmount = Integer.parseInt(cardData[2]);
+                String expiryDateStr = cardData[3];
+                int checkDigit = Integer.parseInt(cardData[4]);
+
+                if (ticketType < 1 || ticketType > 4) {
+                    player.sendMessage(ChatColor.RED + "券種番号が正しくありません。コードを再度発行し直してください。");
+                    return true;
+                }
+
+                if (companyCode < 0 || companyCode > 99) {
+                    player.sendMessage(ChatColor.RED + "事業者コードが正しくありません。コードを再度発行し直してください。");
+                    return true;
+                }
+
+                if (purchaseAmount < 0) {
+                    player.sendMessage(ChatColor.RED + "購入金額が正しくありません。コードを再度発行し直してください。");
+                    return true;
+                }
+
+                SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
+                dateFormat.setLenient(false);
+                Date expiryDate = dateFormat.parse(expiryDateStr);
+
+                Calendar calendar = Calendar.getInstance();
+                calendar.setTime(expiryDate);
+                calendar.set(Calendar.HOUR_OF_DAY, 23);
+                calendar.set(Calendar.MINUTE, 59);
+                calendar.set(Calendar.SECOND, 59);
+                calendar.set(Calendar.MILLISECOND, 999);
+                expiryDate = calendar.getTime();
+
+                ItemStack item = player.getInventory().getItemInMainHand();
+                if (!isValidICCard(item)) {
+                    player.sendMessage(ChatColor.RED + "正しいICカードを持って再度実行してください");
+                    return true;
+                }
+
+                ItemMeta meta = item.getItemMeta();
+                meta.getPersistentDataContainer().set(ticketTypeKey, PersistentDataType.INTEGER, ticketType);
+                meta.getPersistentDataContainer().set(companyCodeKey, PersistentDataType.INTEGER, companyCode);
+                meta.getPersistentDataContainer().set(purchaseAmountKey, PersistentDataType.INTEGER, purchaseAmount);
+                meta.getPersistentDataContainer().set(expiryDateKey, PersistentDataType.LONG, expiryDate.getTime());
+                meta.getPersistentDataContainer().set(checkDigitKey, PersistentDataType.INTEGER, checkDigit);
+
+                if (ticketType == 2 || ticketType == 3) {
+                    if (cardData.length != 7) {
+                        player.sendMessage(ChatColor.RED + "定期区間が正しくありません。コードを再度発行し直してください。");
+                        return true;
+                    }
+                    meta.getPersistentDataContainer().set(routeStartKey, PersistentDataType.STRING, cardData[5]);
+                    meta.getPersistentDataContainer().set(routeEndKey, PersistentDataType.STRING, cardData[6]);
+                } else {
+                    meta.getPersistentDataContainer().remove(routeStartKey);
+                    meta.getPersistentDataContainer().remove(routeEndKey);
+                }
+
+                item.setItemMeta(meta);
+
+                StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                if (data.balance < purchaseAmount) {
+                    player.sendMessage(ChatColor.RED + "残高が不足しています。現在の残高: " + data.balance + "トロポ, 購入金額: " + purchaseAmount + "トロポ");
+                    return true;
+                }
+
+                data.balance -= purchaseAmount;
+                data.paymentHistory.add(PaymentHistory.build("Special::writecard", "", purchaseAmount * -1, data.balance, System.currentTimeMillis() / 1000L));
+                save();
+
+                player.sendMessage(ChatColor.GREEN + "ICカードに定期券情報を書き込みました。");
+
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED + "引数の形式が正しくありません。コードを再度発行し直してください。");
+            } catch (ParseException e) {
+                player.sendMessage(ChatColor.RED + "有効期限が正しくありません。コードを再度発行し直してください。");
+            }
             return true;
         }
         return false;
@@ -195,59 +301,138 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         if (!(event.getClickedBlock().getState() instanceof Sign)) return;
 
         Sign sign = (Sign) event.getClickedBlock().getState();
-        String line1 = ChatColor.stripColor(sign.getLine(0));
-        String line2 = ChatColor.stripColor(sign.getLine(1));
-
         Player player = event.getPlayer();
         ItemStack item = player.getInventory().getItemInMainHand();
 
-        // ICカードを持っている場合
+        SignSide frontSide = sign.getSide(org.bukkit.block.sign.Side.FRONT);
+        SignSide backSide = sign.getSide(org.bukkit.block.sign.Side.BACK);
+        String frontLine1 = ChatColor.stripColor(frontSide.getLine(0));
+        String frontLine2 = ChatColor.stripColor(frontSide.getLine(1));
+        String frontLine3 = ChatColor.stripColor(frontSide.getLine(2));
+        String frontLine4 = ChatColor.stripColor(frontSide.getLine(3));
+        String backLine2 = ChatColor.stripColor(backSide.getLine(1));
+        String backLine3 = ChatColor.stripColor(backSide.getLine(2));
+
         if (isValidICCard(item)) {
-            // ICカードを持っている場合、看板の編集を無効にして入出場処理を行う
-            event.setCancelled(true); // 看板の編集を無効化
+            event.setCancelled(true);
 
-            if ("[入場]".equals(line1) || "[出場]".equals(line1)) {
+            // [入場] と [出場] の処理
+            if ("[入場]".equals(frontLine1) || "[出場]".equals(frontLine1)) {
                 StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+                ItemMeta meta = item.getItemMeta();
+                Integer ticketType = meta.getPersistentDataContainer().get(ticketTypeKey, PersistentDataType.INTEGER);
+                Integer companyCode = meta.getPersistentDataContainer().get(companyCodeKey, PersistentDataType.INTEGER);
+                Long expiryDateLong = meta.getPersistentDataContainer().get(expiryDateKey, PersistentDataType.LONG);
+                String routeStart = meta.getPersistentDataContainer().get(routeStartKey, PersistentDataType.STRING);
+                String routeEnd = meta.getPersistentDataContainer().get(routeEndKey, PersistentDataType.STRING);
 
-                if ("[入場]".equals(line1)) {
+                List<String> exitCompanyCodes = data.validateCompanyCodes(frontLine4);
+                String companyCodeStr = companyCode != null ? String.format("%02d", companyCode) : null;
+
+                if ("[入場]".equals(frontLine1)) {
                     if (data.isInStation) {
                         player.sendMessage(ChatColor.RED + "すでに入場しています。出場してから再度入場してください。");
                         return;
                     }
-                    data.enterStation(line2);
-                    player.sendMessage(ChatColor.GREEN + "入場: " + line2);
+                    data.enterStation(frontLine2, frontLine4);
+                    player.sendMessage(ChatColor.GREEN + "入場: " + frontLine2);
                     player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
-                    // 乗車中の座標を保存
                     data.setRideStartLocation(player.getLocation());
                     player.playSound(player.getLocation(), "custom.kaisatsu", 1.0F, 1.0F);
-                } else if ("[出場]".equals(line1)) {
+                } else if ("[出場]".equals(frontLine1)) {
                     if (!data.isInStation) {
                         player.sendMessage(ChatColor.RED + "入場記録がありません。");
                         return;
                     }
                     int fare = data.calculateFare();
-                    if (data.checkAutoCharge()) {
-                        player.sendMessage(ChatColor.GREEN + "オートチャージが実行されました。新しい残高: " + data.balance + "トロポ");
+
+                    boolean isFree = false;
+                    boolean isExpired = false;
+
+                    if (expiryDateLong != null) {
+                        Date expiryDate = new Date(expiryDateLong);
+                        Date now = new Date();
+                        isExpired = expiryDate.before(now);
+                        if (isExpired) {
+                            SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss");
+                            player.sendMessage(ChatColor.RED + "定期券の有効期限 (" + sdf.format(new Date(expiryDateLong)) + ") が切れています。更新または消去処理をしてください。");
+                        }
                     }
-                    if (data.balance < fare) {
-                        int shortSF = fare - data.balance;
-                        player.sendMessage(ChatColor.RED + String.valueOf(shortSF) + "トロポ不足しています。チャージしてください。");
-                    } else {
-                        data.balance -= fare;
-                        data.paymentHistory.add(PaymentHistory.build(data.stationName, line2, fare * -1, data.balance, System.currentTimeMillis() / 1000L));
-                        save();
-                        player.sendMessage(ChatColor.GREEN + "出場: " + line2 + " 引去: " + fare + "トロポ");
+
+                    if (ticketType != null && companyCode != null && !isExpired) {
+                        if (ticketType == 1) {
+                            if (companyCode == 99) {
+                                isFree = true;
+                                player.sendMessage(ChatColor.GREEN + "定期利用:TORO全線");
+                            } else if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr)) {
+                                isFree = true;
+                                player.sendMessage(ChatColor.GREEN + "定期利用:全線定期");
+                            }
+                        } else if (ticketType == 4) {
+                            if (companyCode == 99) {
+                                isFree = true;
+                                player.sendMessage(ChatColor.GREEN + "定期利用:TORO全線");
+                            }else {
+                                Date purchaseDate = new Date(expiryDateLong);
+                                Date today = new Date();
+                                SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd");
+                                Calendar todayCalendar = Calendar.getInstance();
+                                todayCalendar.setTime(today);
+                                todayCalendar.set(Calendar.HOUR_OF_DAY, 23);
+                                todayCalendar.set(Calendar.MINUTE, 59);
+                                todayCalendar.set(Calendar.SECOND, 59);
+                                todayCalendar.set(Calendar.MILLISECOND, 999);
+                                Date todayEnd = todayCalendar.getTime();
+
+                                if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr) &&
+                                        sdf.format(purchaseDate).equals(sdf.format(today)) && !today.after(new Date(expiryDateLong))) {
+                                    isFree = true;
+                                    player.sendMessage(ChatColor.GREEN + "定期利用:1日乗車券");
+                                }
+                            }
+                        } else if (ticketType == 2 || ticketType == 3) {
+                            if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr) &&
+                                    (routeStart.equals(data.stationName) && routeEnd.equals(frontLine2) ||
+                                            routeStart.equals(frontLine2) && routeEnd.equals(data.stationName))) {
+                                isFree = true;
+                                player.sendMessage(ChatColor.GREEN + "定期利用:通勤･通学定期");
+                            }
+                        }
+                    }
+
+                    if (isFree) {
+                        player.sendMessage(ChatColor.GREEN + "出場: " + frontLine2);
                         player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
                         player.playSound(player.getLocation(), "custom.kaisatsu", 1.0F, 1.0F);
                         data.exitStation();
+                    } else {
+                        if (data.checkAutoCharge()) {
+                            player.sendMessage(ChatColor.GREEN + "オートチャージが実行されました。新しい残高: " + data.balance + "トロポ");
+                        }
+                        if (data.balance < fare) {
+                            int shortSF = fare - data.balance;
+                            player.sendMessage(ChatColor.RED + String.valueOf(shortSF) + "トロポ不足しています。チャージしてください。");
+                        } else {
+                            data.balance -= fare;
+                            data.paymentHistory.add(PaymentHistory.build(data.stationName, frontLine2, fare * -1, data.balance, System.currentTimeMillis() / 1000L));
+                            save();
+                            player.sendMessage(ChatColor.GREEN + "出場: " + frontLine2 + " 引去: " + fare + "トロポ");
+                            player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
+                            if (isExpired && ticketType != null) {
+                                SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日");
+                                player.sendMessage(ChatColor.RED + "定期券の有効期限 (" + sdf.format(new Date(expiryDateLong)) + ") が切れています。更新または消去処理をしてください。");
+                            }
+                            player.playSound(player.getLocation(), "custom.kaisatsu", 1.0F, 1.0F);
+                            data.exitStation();
+                        }
                     }
                 }
             }
 
             // [チャージ] 看板
-            if ("[チャージ]".equals(line1)) {
+            if ("[チャージ]".equals(frontLine1)) {
                 try {
-                    int chargeAmount = Integer.parseInt(line2); // 2行目をチャージ額として処理
+                    int chargeAmount = Integer.parseInt(frontLine2);
                     if (chargeAmount < 0) {
                         player.sendMessage(ChatColor.RED + "チャージ額が不正です");
                         return;
@@ -269,17 +454,16 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             }
 
             // [残高確認] 看板
-            if ("[残高確認]".equals(line1)) {
+            if ("[残高確認]".equals(frontLine1)) {
                 StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
                 player.sendMessage(ChatColor.GREEN + "現在の残高: " + data.balance + "トロポ");
                 return;
             }
 
             // [強制出場] 看板
-            if ("[強制出場]".equals(line1)) {
+            if ("[強制出場]".equals(frontLine1)) {
                 StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
                 if (data.isInStation) {
-                    // 強制出場のため、運賃を引かずに出場
                     player.sendMessage(ChatColor.GREEN + "強制出場しました。");
                     data.exitStation();
                 } else {
@@ -287,16 +471,18 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 }
                 return;
             }
-            if ("[残額調整]".equals(line1)) {
+
+            // [残額調整] 看板
+            if ("[残額調整]".equals(frontLine1)) {
                 try {
-                    int newBalance = Integer.parseInt(line2);
+                    int newBalance = Integer.parseInt(frontLine2);
                     StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
 
                     if (newBalance < 0) {
                         player.sendMessage(ChatColor.RED + "値が不正です。");
                         return;
                     }
-                    data.balance = newBalance; // 残高を設定
+                    data.balance = newBalance;
                     player.sendMessage(ChatColor.GREEN + "新しい残高: " + data.balance + "トロポ");
                     data.paymentHistory.add(PaymentHistory.build("Special::balanceAdjustment", "", newBalance, data.balance, System.currentTimeMillis() / 1000L));
                     save();
@@ -305,22 +491,298 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
                 }
                 return;
             }
-            return;
+
+            // [定期券情報削除] 看板
+            if ("[定期券情報削除]".equals(frontLine1)) {
+                ItemMeta meta = item.getItemMeta();
+                if (meta.getPersistentDataContainer().has(ticketTypeKey, PersistentDataType.INTEGER)) {
+                    meta.getPersistentDataContainer().remove(ticketTypeKey);
+                    meta.getPersistentDataContainer().remove(companyCodeKey);
+                    meta.getPersistentDataContainer().remove(purchaseAmountKey);
+                    meta.getPersistentDataContainer().remove(expiryDateKey);
+                    meta.getPersistentDataContainer().remove(checkDigitKey);
+                    meta.getPersistentDataContainer().remove(routeStartKey);
+                    meta.getPersistentDataContainer().remove(routeEndKey);
+
+                    item.setItemMeta(meta);
+                    player.sendMessage(ChatColor.GREEN + "定期券情報を削除しました。");
+                } else {
+                    player.sendMessage(ChatColor.YELLOW + "定期券情報が登録されていません。");
+                }
+                return;
+            }
+
+            // [定期券情報照会] 看板
+            if ("[定期券情報照会]".equals(frontLine1)) {
+                ItemMeta meta = item.getItemMeta();
+                if (meta.getPersistentDataContainer().has(ticketTypeKey, PersistentDataType.INTEGER)) {
+                    Integer ticketType = meta.getPersistentDataContainer().get(ticketTypeKey, PersistentDataType.INTEGER);
+                    Integer companyCode = meta.getPersistentDataContainer().get(companyCodeKey, PersistentDataType.INTEGER);
+                    Integer purchaseAmount = meta.getPersistentDataContainer().get(purchaseAmountKey, PersistentDataType.INTEGER);
+                    Long expiryDateLong = meta.getPersistentDataContainer().get(expiryDateKey, PersistentDataType.LONG);
+                    Integer checkDigit = meta.getPersistentDataContainer().get(checkDigitKey, PersistentDataType.INTEGER);
+                    String routeStart = meta.getPersistentDataContainer().get(routeStartKey, PersistentDataType.STRING);
+                    String routeEnd = meta.getPersistentDataContainer().get(routeEndKey, PersistentDataType.STRING);
+
+                    player.sendMessage(ChatColor.GREEN + "===== 定期券情報 =====");
+                    player.sendMessage(ChatColor.GREEN + "券種: " + (ticketType != null ? ticketType : "不明"));
+                    player.sendMessage(ChatColor.GREEN + "事業者コード: " + (companyCode != null ? String.format("%02d", companyCode) : "不明"));
+                    player.sendMessage(ChatColor.GREEN + "購入金額: " + (purchaseAmount != null ? purchaseAmount + "トロポ" : "不明"));
+                    if (expiryDateLong != null) {
+                        SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss");
+                        player.sendMessage(ChatColor.GREEN + "有効期限: " + sdf.format(new Date(expiryDateLong)));
+                    } else {
+                        player.sendMessage(ChatColor.GREEN + "有効期限: 不明");
+                    }
+                    player.sendMessage(ChatColor.GREEN + "チェックデジット: " + (checkDigit != null ? checkDigit : "不明"));
+                    if (ticketType != null && (ticketType == 2 || ticketType == 3)) {
+                        player.sendMessage(ChatColor.GREEN + "定期区間: " + (routeStart != null ? routeStart : "不明") + " - " + (routeEnd != null ? routeEnd : "不明"));
+                    }
+                    player.sendMessage(ChatColor.GREEN + "=======================");
+                } else {
+                    player.sendMessage(ChatColor.YELLOW + "このICカードには定期券情報が登録されていません。");
+                }
+                return;
+            }
+
+            // [乗換] 看板の処理（運賃精算と再入場）
+            if ("[乗換]".equals(frontLine1)) {
+                StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+
+                if (!data.isInStation) {
+                    player.sendMessage(ChatColor.RED + "入場記録がないため、乗換改札を利用できません。先に入場してください。");
+                    return;
+                }
+
+                ItemMeta meta = item.getItemMeta();
+                Integer ticketType = meta.getPersistentDataContainer().get(ticketTypeKey, PersistentDataType.INTEGER);
+                Integer companyCode = meta.getPersistentDataContainer().get(companyCodeKey, PersistentDataType.INTEGER);
+                Long expiryDateLong = meta.getPersistentDataContainer().get(expiryDateKey, PersistentDataType.LONG);
+                String routeStart = meta.getPersistentDataContainer().get(routeStartKey, PersistentDataType.STRING);
+                String routeEnd = meta.getPersistentDataContainer().get(routeEndKey, PersistentDataType.STRING);
+
+                List<String> exitCompanyCodes = data.validateCompanyCodes(frontLine4);
+                String companyCodeStr = companyCode != null ? String.format("%02d", companyCode) : null;
+
+                // 1. 出場処理（2行目の駅で精算）
+                int fare = data.calculateFare();
+                String previousStation = data.stationName;
+
+                boolean isFree = false;
+                boolean isExpired = false;
+
+                if (expiryDateLong != null) {
+                    Date expiryDate = new Date(expiryDateLong);
+                    Date now = new Date();
+                    isExpired = expiryDate.before(now);
+                    if (isExpired) {
+                        SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss");
+                        player.sendMessage(ChatColor.RED + "定期券の有効期限 (" + sdf.format(new Date(expiryDateLong)) + ") が切れています。更新または消去処理をしてください。");
+                    }
+                }
+
+                if (ticketType != null && companyCode != null && !isExpired) {
+                    if (ticketType == 1) {
+                        if (companyCode == 99) {
+                            // 事業者コード99は全線定期券として常に無料
+                            isFree = true;
+                            player.sendMessage(ChatColor.GREEN + "定期利用:TORO全線");
+                        } else if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr)) {
+                            isFree = true;
+                            player.sendMessage(ChatColor.GREEN + "定期利用:全線定期");
+                        }
+                    } else if (ticketType == 4) {
+                        Date purchaseDate = new Date(expiryDateLong);
+                        Date today = new Date();
+                        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd");
+                        Calendar todayCalendar = Calendar.getInstance();
+                        todayCalendar.setTime(today);
+                        todayCalendar.set(Calendar.HOUR_OF_DAY, 23);
+                        todayCalendar.set(Calendar.MINUTE, 59);
+                        todayCalendar.set(Calendar.SECOND, 59);
+                        todayCalendar.set(Calendar.MILLISECOND, 999);
+                        Date todayEnd = todayCalendar.getTime();
+
+                        if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr) &&
+                                sdf.format(purchaseDate).equals(sdf.format(today)) && !today.after(new Date(expiryDateLong))) {
+                            isFree = true;
+                            player.sendMessage(ChatColor.GREEN + "定期利用:1日乗車券");
+                        }
+                    } else if (ticketType == 2 || ticketType == 3) {
+                        if (data.entryCompanyCodes.contains(companyCodeStr) && exitCompanyCodes.contains(companyCodeStr) &&
+                                (routeStart.equals(data.stationName) && routeEnd.equals(frontLine2) ||
+                                        routeStart.equals(frontLine2) && routeEnd.equals(data.stationName))) {
+                            isFree = true;
+                            player.sendMessage(ChatColor.GREEN + "定期利用:通勤･通学定期");
+                        }
+                    }
+                }
+
+                if (isFree) {
+                    player.sendMessage(ChatColor.GREEN + "出場: " + frontLine2);
+                } else {
+                    if (data.checkAutoCharge()) {
+                        player.sendMessage(ChatColor.GREEN + "オートチャージが実行されました。新しい残高: " + data.balance + "トロポ");
+                    }
+                    if (data.balance < fare) {
+                        int shortSF = fare - data.balance;
+                        player.sendMessage(ChatColor.RED + String.valueOf(shortSF) + "トロポ不足しています。チャージしてください。");
+                        return;
+                    } else {
+                        data.balance -= fare;
+                        data.paymentHistory.add(PaymentHistory.build(data.stationName, frontLine2, fare * -1, data.balance, System.currentTimeMillis() / 1000L));
+                        save();
+                        player.sendMessage(ChatColor.GREEN + "出場: " + frontLine2 + " 引去: " + fare + "トロポ");
+                        if (isExpired && ticketType != null) {
+                            SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日");
+                            player.sendMessage(ChatColor.RED + "定期券の有効期限 (" + sdf.format(new Date(expiryDateLong)) + ") が切れています。更新または消去処理をしてください。");
+                        }
+                    }
+                }
+
+                // 出場処理を完了（状態をクリア）
+                data.exitStation();
+
+                // 2. 入場処理（3行目の駅から再入場）
+                data.enterStation(frontLine3, frontLine4);
+                player.sendMessage(ChatColor.GREEN + "入場: " + frontLine3);
+                player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
+                data.setRideStartLocation(player.getLocation());
+
+                // サウンド再生
+                player.playSound(player.getLocation(), "custom.kaisatsu", 1.0F, 1.0F);
+                return;
+            }
+
+            // [物販] 看板の裏面 ([IC]) での支払い処理
+            if ("[IC]".equals(backLine2) && "ここにタッチ".equals(backLine3)) {
+                if ("[物販]".equals(frontLine1)) {
+                    String storeName = frontLine2;
+                    String amountStr = frontLine3;
+
+                    try {
+                        int amount = Integer.parseInt(amountStr);
+                        StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
+
+                        if (data.checkAutoCharge()) {
+                            player.sendMessage(ChatColor.GREEN + "オートチャージが実行されました。新しい残高: " + data.balance + "トロポ");
+                        }
+
+                        if (data.balance < amount) {
+                            int shortfall = amount - data.balance;
+                            player.sendMessage(ChatColor.RED + String.valueOf(shortfall) + "トロポ不足しています。チャージしてください。");
+                            return;
+                        }
+
+                        data.balance -= amount;
+                        data.paymentHistory.add(PaymentHistory.build("Shop::" + storeName, "", amount * -1, data.balance, System.currentTimeMillis() / 1000L));
+                        save();
+
+                        player.sendMessage(ChatColor.GREEN + "店舗: " + storeName);
+                        player.sendMessage(ChatColor.GREEN + "支払額: " + amount + "トロポ");
+                        player.sendMessage(ChatColor.GREEN + "残高: " + data.balance + "トロポ");
+                        player.playSound(player.getLocation(), "minecraft:block.note_block.bell", 1.0F, 1.0F);
+                    } catch (NumberFormatException e) {
+                        player.sendMessage(ChatColor.RED + "店舗看板の金額が不正です。管理者に連絡してください。");
+                    }
+                } else {
+                    player.sendMessage(ChatColor.RED + "この看板は物販用に正しく設定されていません。");
+                }
+                return;
+            }
         }
     }
-
 
     @EventHandler
     public void onSignChange(SignChangeEvent event) {
         String line1 = ChatColor.stripColor(event.getLine(0));
-        if ("[入場]".equals(line1) || "[出場]".equals(line1) || "[チャージ]".equals(line1)) {
+        Player player = event.getPlayer();
+
+        if ("[入場]".equals(line1) || "[出場]".equals(line1) || "[チャージ]".equals(line1) || "[定期券情報削除]".equals(line1)) {
             String line2 = ChatColor.stripColor(event.getLine(1));
-            if (line2 == null || line2.isEmpty()) {
-                event.getPlayer().sendMessage(ChatColor.RED + "必要な情報を2行目に記載してください。");
+            if ("[定期券情報削除]".equals(line1)) {
+                player.sendMessage(ChatColor.GREEN + "定期券情報削除看板が正常に設定されました。");
+            } else if (line2 == null || line2.isEmpty()) {
+                player.sendMessage(ChatColor.RED + "必要な情報を2行目に記載してください。");
                 event.setCancelled(true);
             } else {
-                event.getPlayer().sendMessage(ChatColor.GREEN + "看板が正常に設定されました。");
+                player.sendMessage(ChatColor.GREEN + "看板が正常に設定されました。");
             }
+        } else if ("[物販]".equals(line1)) {
+            String storeName = ChatColor.stripColor(event.getLine(1));
+            String amountStr = ChatColor.stripColor(event.getLine(2));
+
+            if (storeName == null || storeName.isEmpty() || amountStr == null || amountStr.isEmpty()) {
+                player.sendMessage(ChatColor.RED + "2行目に店舗名、3行目に金額を記載してください。");
+                event.setCancelled(true);
+                return;
+            }
+
+            try {
+                int amount = Integer.parseInt(amountStr);
+                if (amount <= 0) {
+                    player.sendMessage(ChatColor.RED + "金額は正の整数で指定してください。");
+                    event.setCancelled(true);
+                    return;
+                }
+
+                event.setLine(0, "[物販]");
+                event.setLine(1, storeName);
+                event.setLine(2, String.valueOf(amount));
+                player.sendMessage(ChatColor.GREEN + "物販看板が正常に設定されました。");
+
+                org.bukkit.block.Sign signState = (org.bukkit.block.Sign) event.getBlock().getState();
+                SignSide backSide = signState.getSide(org.bukkit.block.sign.Side.BACK);
+                backSide.setLine(1, ChatColor.GREEN + "[IC]");
+                backSide.setLine(2, "ここにタッチ");
+                signState.update(true);
+                player.sendMessage(ChatColor.GREEN + "裏面に支払い情報が書き込まれました。");
+
+                getLogger().info("看板設置: 表面=" + event.getLine(0) + ", 裏面2行目=" + backSide.getLine(1) + ", 裏面3行目=" + backSide.getLine(2));
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED + "3行目の金額が正しい数値ではありません。");
+                event.setCancelled(true);
+            }
+        } else if ("[定期券情報照会]".equals(line1)) {
+            event.setLine(0, "[定期券情報照会]");
+            player.sendMessage(ChatColor.GREEN + "定期券情報照会看板が正常に設定されました。");
+        } else if ("[乗換]".equals(line1)) {
+            String departureStation = ChatColor.stripColor(event.getLine(1));
+            String transferStation = ChatColor.stripColor(event.getLine(2));
+            String companyCodesLine = ChatColor.stripColor(event.getLine(3));
+
+            if (departureStation == null || departureStation.isEmpty() || transferStation == null || transferStation.isEmpty()) {
+                player.sendMessage(ChatColor.RED + "2行目に出発駅、3行目に乗り換え先駅を記載してください。");
+                event.setCancelled(true);
+                return;
+            }
+
+            event.setLine(0, "[乗換]");
+            event.setLine(1, departureStation);
+            event.setLine(2, transferStation);
+            if (companyCodesLine != null && !companyCodesLine.isEmpty()) {
+                String[] codes = companyCodesLine.split(" ");
+                List<String> validCodes = new ArrayList<>();
+
+                for (String code : codes) {
+                    try {
+                        int codeNum = Integer.parseInt(code);
+                        if (codeNum < 0 || codeNum > 99) {
+                            player.sendMessage(ChatColor.RED + "事業者コードは00から99までの整数で指定してください。無効な値: " + code);
+                            event.setCancelled(true);
+                            return;
+                        }
+                        validCodes.add(String.format("%02d", codeNum));
+                    } catch (NumberFormatException e) {
+                        player.sendMessage(ChatColor.RED + "4行目の事業者コードに正しくない値が含まれています: " + code);
+                        event.setCancelled(true);
+                        return;
+                    }
+                }
+
+                event.setLine(3, String.join(" ", validCodes));
+            }
+            player.sendMessage(ChatColor.GREEN + "乗換看板が正常に設定されました。");
         }
     }
 
@@ -330,7 +792,6 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             Player player = (Player) event.getEntered();
             StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
             if (data.isInStation) {
-                // 乗車中の座標を保存
                 data.setRideStartLocation(player.getLocation());
             }
         }
@@ -345,39 +806,58 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             StationData data = playerData.computeIfAbsent(player.getUniqueId(), k -> new StationData());
 
             if (data.isInStation) {
-                // 乗車中の移動距離を加算
                 data.addTravelDistance(event.getTo());
             }
         }
     }
+
     private boolean isValidICCard(ItemStack item) {
         if (item == null || item.getType() != Material.PAPER) return false;
         ItemMeta meta = item.getItemMeta();
         if (meta == null || !meta.hasCustomModelData()) return false;
-        return meta.getCustomModelData() == 1 || meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3|| meta.getCustomModelData() == 4|| meta.getCustomModelData() == 5|| meta.getCustomModelData() == 6|| meta.getCustomModelData() == 7|| meta.getCustomModelData() == 8|| meta.getCustomModelData() == 9;
+        return meta.getCustomModelData() == 1 || meta.getCustomModelData() == 2 || meta.getCustomModelData() == 3 ||
+                meta.getCustomModelData() == 4 || meta.getCustomModelData() == 5 || meta.getCustomModelData() == 6 ||
+                meta.getCustomModelData() == 7 || meta.getCustomModelData() == 8 || meta.getCustomModelData() == 9;
     }
 
     public class StationData {
         public boolean isInStation = false;
-        public int balance = 0; // 残高はint型
+        public int balance = 0;
         public String stationName = "";
         private Location rideStartLocation;
         private double travelDistance = 0;
         public ArrayList<PaymentHistory> paymentHistory = new ArrayList<>();
+        public Integer autoChargeThreshold = null;
+        public Integer autoChargeAmount = null;
+        private List<String> entryCompanyCodes = new ArrayList<>();
 
-        public Integer autoChargeThreshold = null; // 残高がこれを下回った場合にオートチャージ
-        public Integer autoChargeAmount = null;    // オートチャージの金額
-
-        public void enterStation(String stationName) {
+        public void enterStation(String stationName, String companyCodesLine) {
             this.isInStation = true;
             this.stationName = stationName;
             this.travelDistance = 0;
+            this.entryCompanyCodes = validateCompanyCodes(companyCodesLine);
         }
 
         public void exitStation() {
             this.isInStation = false;
             this.stationName = "";
             this.travelDistance = 0;
+            this.entryCompanyCodes.clear();
+        }
+
+        private List<String> validateCompanyCodes(String line) {
+            List<String> validCodes = new ArrayList<>();
+            if (line == null || line.trim().isEmpty()) return validCodes;
+            String[] codes = line.split(" ");
+            for (String code : codes) {
+                try {
+                    int codeNum = Integer.parseInt(code);
+                    if (codeNum >= 0 && codeNum <= 99) {
+                        validCodes.add(String.format("%02d", codeNum));
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+            return validCodes;
         }
 
         public void setRideStartLocation(Location location) {
@@ -392,7 +872,7 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
         }
 
         public int calculateFare() {
-            return (int) (travelDistance * .2); // 仮の運賃計算式 (int型)
+            return (int) (travelDistance * .2);
         }
 
         public boolean checkAutoCharge() {
@@ -445,5 +925,4 @@ public class TOROpassICsystem extends JavaPlugin implements Listener, CommandExe
             }
         }
     }
-
 }

@@ -1,18 +1,24 @@
 name: TOROpassICsystem
-version: 1.1
+version: 1.4
 main: prj.salmon.toropassicsystem.TOROpassICsystem
 api-version: 1.20
 commands:
   charge:
     description: "ICカードに金額をチャージします"
-    usage: "/charge <金額>"
+    usage: "/charge [金額]"
   autocharge:
     description: "ICカードにオートチャージを設定します"
-    usage: "/autocharge <いくらを下回ったとき> <チャージ額> /autocharge stopで停止できます"
+    usage: "/autocharge [いくらを下回ったとき] [チャージ額] または /autocharge stop"
+  writecard:
+    description: "ICカードに定期券情報を書き込みます"
+    usage: "TOROpassの発売機で定期券データをコピーし、Minecraft内で貼り付けて実行してください"
 permissions:
   toropassicsystem.charge:
     description: "チャージコマンドの使用を許可します"
     default: true
   toropassicsystem.autocharge:
-    description: "チャージコマンドの使用を許可します"
+    description: "オートチャージ設定の使用を許可します"
+    default: true
+  toropassicsytem.writecard:
+    description: "定期券情報の書き込みを許可します"
     default: true
